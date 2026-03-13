@@ -1,296 +1,223 @@
-# auto_clicker.py （保存为此文件名！）
+# DesktopAutoClicker 【定制版】- 无OpenCV依赖 | 纯PIL+numpy实现
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import pyautogui
-import cv2
-import numpy as np
-import time
+from tkinter import filedialog, messagebox, scrolledtext
 import threading
+import time
 import os
-import queue
-from PIL import Image, ImageTk
+import keyboard
+from PIL import ImageGrab, Image
+import numpy as np
+import pyautogui
 
-# 尝试导入keyboard（全局快捷键）
-try:
-    import keyboard
-    KEYBOARD_AVAILABLE = True
-except ImportError:
-    KEYBOARD_AVAILABLE = False
-
-class AutoClickerApp:
+class AutoClicker:
     def __init__(self, root):
         self.root = root
-        self.root.title("🎯 桌面自动点击工具 v3.1 (精简无OCR版)")
-        self.root.geometry("800x600")
-        self.root.minsize(750, 550)
+        self.root.title("DesktopAutoClicker 【定制版】✨ | 作者：weekstarR25")
+        self.root.geometry("600x500")
+        self.root.resizable(False, False)
+        
+        # 水印标识（防二次传播）
+        self.watermark = "【weekstarR25 定制版】"
         
         # 核心变量
         self.target_images = []
-        self.interval_time = tk.DoubleVar(value=1.0)
-        self.loop_count = tk.IntVar(value=5)
         self.is_running = False
-        self.stop_flag = False
-        self.click_type = tk.StringVar(value="single")
-        self.infinite_loop = tk.BooleanVar(value=False)
-        self.hotkey_enabled = tk.BooleanVar(value=False)
-        self.start_hotkey = "F6"
-        self.stop_hotkey = "F7"
-        self.log_queue = queue.Queue()
-        self.hotkey_registered = False
+        self.interval = 1.0
+        self.loop_count = 0
+        self.current_loop = 0
         
-        # 初始化
-        self.setup_hotkeys()
         self.create_widgets()
-        self.process_log_queue()
-    
-    def setup_hotkeys(self):
-        if KEYBOARD_AVAILABLE and hasattr(keyboard, 'add_hotkey'):
-            try:
-                keyboard.add_hotkey(self.start_hotkey.lower(), self.trigger_start)
-                keyboard.add_hotkey(self.stop_hotkey.lower(), self.trigger_stop)
-                self.hotkey_registered = True
-            except: pass
-    
-    def trigger_start(self): 
-        if not self.is_running: self.root.after(0, self.start_clicking_safe)
-    def trigger_stop(self): 
-        if self.is_running: self.root.after(0, self.stop_clicking)
-    
+        self.setup_hotkeys()
+        
+        # 启动水印提示
+        self.log(f"✅ 程序启动成功 | {self.watermark}")
+        self.log("💡 操作指南：截图目标区域 → 添加图片 → 设置参数 → 按F6开始")
+
     def create_widgets(self):
-        # 顶部状态栏
-        status_bar = ttk.Frame(self.root, relief=tk.SUNKEN)
-        status_bar.pack(fill=tk.X, padx=5, pady=2)
-        ttk.Label(status_bar, text="状态:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        self.hotkey_label = ttk.Label(status_bar, text="⌨️ 快捷键: F6开始 / F7停止", foreground="green")
-        self.hotkey_label.pack(side=tk.LEFT, padx=10)
+        # 顶部水印栏
+        tk.Label(self.root, text=self.watermark, 
+                fg="blue", font=("Arial", 10, "bold")).pack(pady=5)
         
-        # 主容器
-        main = ttk.Frame(self.root, padding="10")
-        main.pack(fill=tk.BOTH, expand=True)
+        # 图片列表框
+        frame_list = tk.Frame(self.root)
+        frame_list.pack(fill="x", padx=10, pady=5)
+        tk.Label(frame_list, text="🎯 已添加目标图片:").pack(anchor="w")
+        self.listbox = tk.Listbox(frame_list, height=6)
+        self.listbox.pack(fill="x", pady=5)
         
-        # ====== 图片管理区（唯一目标模式）======
-        img_frame = ttk.LabelFrame(main, text="🖼️ 目标图片管理（截图添加）", padding="10")
-        img_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        # 按钮区
+        frame_btn = tk.Frame(self.root)
+        frame_btn.pack(fill="x", padx=10)
+        tk.Button(frame_btn, text="➕ 添加图片", command=self.add_image, width=15).pack(side="left", padx=2)
+        tk.Button(frame_btn, text="➖ 删除选中", command=self.remove_image, width=15).pack(side="left", padx=2)
+        tk.Button(frame_btn, text="🧹 清空列表", command=self.clear_list, width=15).pack(side="left", padx=2)
         
-        # 列表
-        list_f = ttk.Frame(img_frame)
-        list_f.pack(fill=tk.BOTH, expand=True, pady=5)
-        self.img_list = tk.Listbox(list_f, height=6)
-        sb = ttk.Scrollbar(list_f, orient=tk.VERTICAL, command=self.img_list.yview)
-        self.img_list.config(yscrollcommand=sb.set)
-        self.img_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        # 参数设置
+        frame_param = tk.Frame(self.root)
+        frame_param.pack(fill="x", padx=10, pady=10)
+        tk.Label(frame_param, text="⏱️ 点击间隔(秒):").pack(anchor="w")
+        self.interval_var = tk.StringVar(value="1.0")
+        tk.Entry(frame_param, textvariable=self.interval_var, width=10).pack(anchor="w", pady=2)
+        tk.Label(frame_param, text="🔄 循环次数 (0=无限):").pack(anchor="w")
+        self.loop_var = tk.StringVar(value="0")
+        tk.Entry(frame_param, textvariable=self.loop_var, width=10).pack(anchor="w", pady=2)
         
-        # 按钮
-        btn_f = ttk.Frame(img_frame)
-        btn_f.pack(fill=tk.X, pady=5)
-        ttk.Button(btn_f, text="➕ 添加图片", command=self.add_image, width=12).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_f, text="➖ 删除选中", command=self.del_image, width=12).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_f, text="🗑️ 清空列表", command=self.clear_images, width=12).pack(side=tk.LEFT, padx=2)
+        # 状态栏
+        self.status_label = tk.Label(self.root, text="⏹️ 状态：空闲中", fg="gray", font=("Arial", 10))
+        self.status_label.pack(pady=5)
         
-        # ====== 高级设置 ======
-        set_frame = ttk.LabelFrame(main, text="⚙️ 点击设置", padding="10")
-        set_frame.pack(fill=tk.X, pady=5)
-        
-        # 点击类型
-        click_f = ttk.Frame(set_frame)
-        click_f.pack(fill=tk.X, pady=3)
-        ttk.Label(click_f, text="🖱️ 点击方式:").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(click_f, text="单击", variable=self.click_type, value="single").pack(side=tk.LEFT, padx=10)
-        ttk.Radiobutton(click_f, text="双击", variable=self.click_type, value="double").pack(side=tk.LEFT, padx=5)
-        
-        # 循环设置
-        loop_f = ttk.Frame(set_frame)
-        loop_f.pack(fill=tk.X, pady=3)
-        ttk.Label(loop_f, text="⏱️ 间隔(秒):").pack(side=tk.LEFT, padx=5)
-        ttk.Spinbox(loop_f, from_=0.1, to=60, increment=0.1, textvariable=self.interval_time, width=8).pack(side=tk.LEFT, padx=5)
-        ttk.Label(loop_f, text="🔄 循环次数:").pack(side=tk.LEFT, padx=15)
-        ttk.Spinbox(loop_f, from_=1, to=9999, textvariable=self.loop_count, width=6).pack(side=tk.LEFT, padx=2)
-        ttk.Checkbutton(loop_f, text="♾️ 无限循环", variable=self.infinite_loop, 
-                       command=lambda: self.loop_count_spin.config(state=tk.DISABLED if self.infinite_loop.get() else tk.NORMAL)).pack(side=tk.LEFT, padx=15)
-        self.loop_count_spin = ttk.Spinbox(loop_f, from_=1, to=9999, textvariable=self.loop_count, width=6)
-        self.loop_count_spin.pack(side=tk.LEFT, padx=2)
-        
-        # ====== 控制按钮 ======
-        ctrl_f = ttk.Frame(main)
-        ctrl_f.pack(pady=15)
-        self.start_btn = ttk.Button(ctrl_f, text="▶️ 开始执行 (F6)", command=self.start_clicking_safe, width=18, style="Accent.TButton")
-        self.start_btn.pack(side=tk.LEFT, padx=10)
-        self.stop_btn = ttk.Button(ctrl_f, text="⏹️ 停止 (F7)", command=self.stop_clicking, width=18, state=tk.DISABLED)
-        self.stop_btn.pack(side=tk.LEFT, padx=10)
-        
-        # ====== 日志区 ======
-        log_f = ttk.LabelFrame(main, text="📋 运行日志", padding="5")
-        log_f.pack(fill=tk.BOTH, expand=True, pady=5)
-        self.log_txt = tk.Text(log_f, height=10, state=tk.DISABLED, wrap=tk.WORD, font=("Consolas", 9))
-        sb2 = ttk.Scrollbar(log_f, orient=tk.VERTICAL, command=self.log_txt.yview)
-        self.log_txt.configure(yscrollcommand=sb2.set)
-        self.log_txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb2.pack(side=tk.RIGHT, fill=tk.Y)
+        # 日志框
+        tk.Label(self.root, text="📜 运行日志:").pack(anchor="w", padx=10)
+        self.log_text = scrolledtext.ScrolledText(self.root, height=12, state="disabled")
+        self.log_text.pack(fill="both", padx=10, pady=5)
         
         # 底部提示
-        hint = ttk.Frame(main)
-        hint.pack(fill=tk.X, pady=(10,0))
-        ttk.Label(hint, text="💡 提示：截图目标区域 → 添加图片 → 设置参数 → 按F6开始 | 首次测试建议循环=2, 间隔=3秒", 
-                 foreground="#1a5fb4", font=("Arial", 9)).pack()
-        
-        style = ttk.Style()
-        style.configure("Accent.TButton", font=("Arial", 10, "bold"))
-    
-    # ====== 核心功能（精简版仅保留图片识别）======
+        tk.Label(self.root, 
+                text="⌨️ 快捷键：F6=开始 | F7=停止 | 首次运行若弹安全警告→点'仍要运行'",
+                fg="darkgreen", font=("Arial", 9)).pack(pady=3)
+
+    def log(self, msg):
+        self.log_text.config(state="normal")
+        self.log_text.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        self.log_text.see("end")
+        self.log_text.config(state="disabled")
+        print(msg)  # 同时输出到控制台（打包时无影响）
+
     def add_image(self):
-        paths = filedialog.askopenfilenames(filetypes=[("图片", "*.png *.jpg *.jpeg *.bmp")])
-        for p in paths:
-            if p not in self.target_images:
-                self.target_images.append(p)
-                self.img_list.insert(tk.END, os.path.basename(p))
-        if paths: self.add_log(f"✅ 添加 {len(paths)} 个图片目标")
-    
-    def del_image(self):
-        sel = self.img_list.curselection()
-        if sel: 
+        path = filedialog.askopenfilename(
+            title="选择目标图片",
+            filetypes=[("图片文件", "*.png *.jpg *.jpeg *.bmp")]
+        )
+        if path and os.path.exists(path):
+            self.target_images.append(path)
+            self.listbox.insert("end", os.path.basename(path))
+            self.log(f"✅ 已添加: {os.path.basename(path)}")
+
+    def remove_image(self):
+        sel = self.listbox.curselection()
+        if sel:
             idx = sel[0]
-            self.target_images.pop(idx)
-            self.img_list.delete(idx)
-            self.add_log("➖ 已删除选中图片")
-        else: messagebox.showinfo("提示", "请先选择图片")
-    
-    def clear_images(self):
-        if messagebox.askyesno("确认", "清空所有图片?"): 
-            self.target_images.clear()
-            self.img_list.delete(0, tk.END)
-            self.add_log("🗑️ 已清空图片列表")
-    
-    def find_image(self):
+            self.listbox.delete(idx)
+            del self.target_images[idx]
+            self.log("🗑️ 已删除选中图片")
+
+    def clear_list(self):
+        self.listbox.delete(0, "end")
+        self.target_images = []
+        self.log("🧹 已清空图片列表")
+
+    def setup_hotkeys(self):
+        keyboard.add_hotkey('f6', self.start_clicking)
+        keyboard.add_hotkey('f7', self.stop_clicking)
+
+    def find_image_pil(self, template_path):
+        """纯PIL+numpy实现模板匹配（无cv2依赖）"""
         try:
-            screen = pyautogui.screenshot()
-            screen_np = np.array(screen)
-            screen_bgr = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
+            # 1. 截图并转灰度
+            screen = ImageGrab.grab()
+            screen_gray = np.array(screen.convert('L'))
             
-            for i, path in enumerate(self.target_images):
-                if not os.path.exists(path): continue
-                tmpl = cv2.imread(path)
-                if tmpl is None: continue
-                res = cv2.matchTemplate(screen_bgr, tmpl, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                if max_val >= 0.75:
-                    h, w = tmpl.shape[:2]
-                    x, y = max_loc[0] + w//2, max_loc[1] + h//2
-                    self.add_log(f"🔍 找到 '{os.path.basename(path)}' | 匹配度:{max_val:.0%} | 位置:({x},{y})")
-                    return x, y
-            self.add_log(f"⚠️ 未找到匹配（已扫描{len(self.target_images)}个目标）")
+            # 2. 读取模板图并转灰度
+            tmpl = Image.open(template_path).convert('L')
+            tmpl_np = np.array(tmpl)
+            h, w = tmpl_np.shape
+            
+            # 边界检查
+            if h > screen_gray.shape[0] or w > screen_gray.shape[1]:
+                self.log(f"⚠️ 模板过大: {os.path.basename(template_path)}")
+                return None
+            
+            # 3. 滑动窗口匹配（简化版归一化互相关）
+            best_score = -1
+            best_loc = None
+            step = max(1, w // 4)  # 降低计算量
+            
+            for y in range(0, screen_gray.shape[0] - h + 1, step):
+                for x in range(0, screen_gray.shape[1] - w + 1, step):
+                    roi = screen_gray[y:y+h, x:x+w]
+                    if roi.shape != tmpl_np.shape:
+                        continue
+                    
+                    # 计算归一化互相关（简化）
+                    roi_norm = (roi - roi.mean()) / (roi.std() + 1e-8)
+                    tmpl_norm = (tmpl_np - tmpl_np.mean()) / (tmpl_np.std() + 1e-8)
+                    score = np.mean(roi_norm * tmpl_norm)
+                    
+                    if score > best_score and score > 0.75:  # 阈值0.75
+                        best_score = score
+                        best_loc = (x, y)
+            
+            if best_loc:
+                center_x = best_loc[0] + w // 2
+                center_y = best_loc[1] + h // 2
+                self.log(f"🔍 找到 '{os.path.basename(template_path)}' | 匹配度:{best_score:.0%} | 位置:({center_x},{center_y})")
+                return center_x, center_y
+            
             return None
         except Exception as e:
-            self.add_log(f"❌ 查找错误: {str(e)}")
+            self.log(f"❌ 匹配错误: {str(e)}")
             return None
-    
-    def click_target(self, x, y):
-        try:
-            sw, sh = pyautogui.size()
-            if not (0 <= x <= sw and 0 <= y <= sh):
-                self.add_log(f"❌ 坐标无效: ({x},{y})")
-                return False
-            pyautogui.moveTo(x, y, duration=0.1)
-            if self.click_type.get() == "double":
-                pyautogui.doubleClick(x, y, interval=0.1)
-                self.add_log(f"🖱️ 双击位置: ({x},{y})")
-            else:
-                pyautogui.click(x, y)
-                self.add_log(f"🖱️ 单击位置: ({x},{y})")
-            return True
-        except Exception as e:
-            self.add_log(f"❌ 点击失败: {str(e)}")
-            return False
-    
-    def validate(self):
-        if not self.target_images:
-            messagebox.showerror("错误", "请先添加至少1张目标图片！")
-            return False
-        if not self.infinite_loop.get() and self.loop_count.get() < 1:
-            messagebox.showerror("错误", "循环次数需≥1")
-            return False
-        return True
-    
-    def start_clicking_safe(self):
-        if self.validate(): self.start_clicking()
-    
+
+    def click_loop(self):
+        self.current_loop = 0
+        max_loop = int(self.loop_var.get()) if self.loop_var.get().isdigit() else 0
+        
+        while self.is_running:
+            if max_loop > 0 and self.current_loop >= max_loop:
+                self.log("✅ 已完成指定循环次数")
+                break
+            
+            found = False
+            for img_path in self.target_images:
+                if not self.is_running:
+                    break
+                pos = self.find_image_pil(img_path)
+                if pos:
+                    pyautogui.click(pos[0], pos[1], button='left')
+                    self.log(f"🖱️ 已点击 | 间隔 {self.interval}s")
+                    found = True
+                    break
+            
+            if not found:
+                self.log("⚠️ 本轮未找到目标（继续扫描）")
+            
+            self.current_loop += 1
+            self.status_label.config(text=f"▶️ 运行中 | 循环:{self.current_loop}/{max_loop if max_loop>0 else '∞'}", fg="green")
+            time.sleep(float(self.interval_var.get()) if self.interval_var.get().replace('.','',1).isdigit() else 1.0)
+        
+        self.is_running = False
+        self.status_label.config(text="⏹️ 状态：已停止", fg="gray")
+        self.log("⏹️ 任务已停止")
+
     def start_clicking(self):
-        self.is_running = True
-        self.stop_flag = False
-        self.start_btn.config(state=tk.DISABLED, text="⏳ 运行中...")
-        self.stop_btn.config(state=tk.NORMAL)
-        
-        # 清空日志
-        self.log_txt.config(state=tk.NORMAL)
-        self.log_txt.delete(1.0, tk.END)
-        self.log_txt.config(state=tk.DISABLED)
-        
-        mode = "双击" if self.click_type.get()=="double" else "单击"
-        loop = "♾️ 无限循环" if self.infinite_loop.get() else f"{self.loop_count.get()}次"
-        self.add_log("="*50)
-        self.add_log(f"🚀 任务启动 | 点击:{mode} | 循环:{loop} | 间隔:{self.interval_time.get()}秒")
-        self.add_log(f"🎯 目标图片: {len(self.target_images)}个")
-        self.add_log("="*50)
-        
-        threading.Thread(target=self.worker, daemon=True).start()
-    
+        if not self.is_running:
+            if not self.target_images:
+                messagebox.showwarning("提示", "请先添加目标图片！")
+                return
+            try:
+                self.interval = float(self.interval_var.get())
+                if self.interval < 0.5:
+                    self.interval = 0.5
+                    self.interval_var.set("0.5")
+            except:
+                self.interval = 1.0
+            
+            self.is_running = True
+            self.log(f"\n🚀 任务启动 | {self.watermark}")
+            self.log(f"⏱️ 间隔: {self.interval}s | 循环: {'无限' if self.loop_var.get()=='0' else self.loop_var.get()}")
+            threading.Thread(target=self.click_loop, daemon=True).start()
+
     def stop_clicking(self):
-        self.stop_flag = True
-        self.add_log("\n🛑 停止信号已发送...")
-        self.stop_btn.config(state=tk.DISABLED)
-    
-    def worker(self):
-        interval = self.interval_time.get()
-        success, fail, iters = 0, 0, 0
-        try:
-            while True:
-                if self.stop_flag: break
-                iters += 1
-                self.add_log(f"\n🔄 第 {iters} 次查找...")
-                pos = self.find_image()
-                if pos and self.click_target(*pos): success += 1
-                else: fail += 1
-                if not self.infinite_loop.get() and iters >= self.loop_count.get(): break
-                if not self.stop_flag: time.sleep(interval)
-        finally:
-            self.add_log("\n" + "="*50)
-            if self.stop_flag:
-                self.add_log(f"⏹️ 任务中断 | 成功:{success} | 失败:{fail} | 总计:{iters}次")
-            else:
-                self.add_log(f"✅ 任务完成 | 成功:{success} | 失败:{fail} | 总计:{iters}次")
-            self.add_log("="*50)
-            self.root.after(0, lambda: [
-                self.start_btn.config(state=tk.NORMAL, text="▶️ 开始执行 (F6)"),
-                self.stop_btn.config(state=tk.DISABLED)
-            ])
+        if self.is_running:
             self.is_running = False
-    
-    def add_log(self, msg):
-        t = time.strftime('%H:%M:%S')
-        self.log_queue.put(f"[{t}] {msg}")
-    
-    def process_log_queue(self):
-        try:
-            while True:
-                msg = self.log_queue.get_nowait()
-                self.log_txt.config(state=tk.NORMAL)
-                self.log_txt.insert(tk.END, msg + "\n")
-                self.log_txt.see(tk.END)
-                self.log_txt.config(state=tk.DISABLED)
-        except: pass
-        self.root.after(100, self.process_log_queue)
-    
+            self.log("🛑 收到停止指令...")
+
     def on_closing(self):
-        self.stop_flag = True
-        if self.hotkey_registered and KEYBOARD_AVAILABLE:
-            try: keyboard.unhook_all_hotkeys()
-            except: pass
+        self.stop_clicking()
         self.root.destroy()
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = AutoClickerApp(root)
+    app = AutoClicker(root)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
-    try: root.iconphoto(True, ImageTk.PhotoImage(Image.new('RGBA', (1,1), (0,0,0,0))))
-    except: pass
     root.mainloop()
