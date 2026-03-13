@@ -1,0 +1,54 @@
+name: 🚀 自动打包 DesktopAutoClicker
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # 允许手动触发（强烈推荐！）
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 设置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: ⚙️ 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: 📦 PyInstaller 打包（关键参数已修复DLL问题）
+        run: |
+          pyinstaller --clean --noconfirm ^
+            --onefile ^
+            --windowed ^
+            --noupx ^                          # 禁用UPX（防"找不到函数"）
+            --collect-all=cv2 ^                # 强制包含OpenCV所有DLL
+            --hidden-import=keyboard ^
+            --hidden-import=PIL ^
+            --name="DesktopAutoClicker" ^
+            --icon=NONE ^
+            auto_clicker.py
+        shell: pwsh
+
+      - name: 📤 上传到 Release（自动生成下载链接！）
+        uses: softprops/action-gh-release@v1
+        if: success()
+        with:
+          files: dist/DesktopAutoClicker.exe
+          tag_name: v1.0-${{ github.sha }}
+          name: DesktopAutoClicker v1.0 (云端构建)
+          body: |
+            ✅ 云端纯净环境打包｜无DLL冲突｜杀毒误报率低
+            📌 使用说明：
+            1. 下载 DesktopAutoClicker.exe
+            2. 双击运行（首次弹安全警告点"仍要运行"）
+            3. 按F6开始 / F7停止
+            💡 截图目标区域 → 添加图片 → 设置参数 → 开始执行
+        env:
+          GITHUB_TOKEN: ${{ github.token }}  # GitHub自动提供，无需您设置secret！
